@@ -4,12 +4,13 @@ A Model Context Protocol (MCP) server implementation for Microsoft SQL Server. T
 
 ## Features
 
-- 🚀 **Execute SQL Queries**: Run any SQL query with proper error handling and result formatting
-- 📊 **Browse Database Schema**: List tables, view table structures, and sample data
+- 🚀 **Execute Read-Only SQL**: Accepts only safe `SELECT`/`WITH` queries with validation and truncation
+- 📊 **Browse Database Schema**: List only allowed tables and optionally expose schema-only resources
 - 🔧 **Multi-line Query Support**: Correctly handles queries with newlines, comments, and GO statements
 - 🔐 **Flexible Authentication**: Supports both Windows (trusted) and SQL authentication
 - ⚙️ **Environment Configuration**: Easy setup via environment variables
 - 🛡️ **Security**: Connection string encryption, certificate trust options, and secure credential handling
+- 🔒 **Defense in Depth**: Designed for SQL auth users with real read-only DB permissions plus MCP-side query validation
 
 ## Installation
 
@@ -79,6 +80,19 @@ For Windows Authentication:
 - `MSSQL_ENCRYPT` - Encrypt connection (default: `yes`)
 - `MSSQL_CONNECTION_TIMEOUT` - Connection timeout in seconds (default: `30`)
 - `MSSQL_MULTI_SUBNET_FAILOVER` - Enable multi-subnet failover (default: `no`)
+
+### Read-Only Security Variables
+
+- `MSSQL_READ_ONLY` - Enable strict read-only validation (default: `true`)
+- `MSSQL_MAX_ROWS` - Maximum rows returned by `execute_sql` or sample data reads (default: `200`)
+- `MSSQL_MAX_TABLES` - Maximum tables exposed as MCP resources (default: `100`)
+- `MSSQL_QUERY_TIMEOUT` - Per-query execution timeout in seconds (default: `30`)
+- `MSSQL_ALLOWED_SCHEMAS` - Comma-separated schema allowlist (default: `dbo`)
+- `MSSQL_ALLOWED_TABLES` - Optional comma-separated fully qualified table allowlist, for example `dbo.Clientes,dbo.Ordenes`
+- `MSSQL_BLOCK_SCHEMA_SAMPLES` - Reduce schema output to structural metadata only (default: `true`)
+- `MSSQL_BLOCK_DATA_RESOURCES` - Disable `.../data` MCP resources (default: `true`)
+- `MSSQL_ALLOW_METADATA_ONLY` - Allow metadata queries only, blocking user-table reads (default: `false`)
+- `MSSQL_MAX_QUERY_LENGTH` - Maximum accepted query length in characters (default: `20000`)
 
 ## Usage
 
@@ -181,6 +195,7 @@ For use with Claude Desktop, Claude Code, Cursor, or any MCP-compatible client. 
 ### execute_sql
 
 Execute any SQL query on the connected database.
+Execute validated read-only SQL on the connected database.
 
 **Parameters:**
 - `query` (string, required): The SQL query to execute
@@ -188,30 +203,16 @@ Execute any SQL query on the connected database.
 **Examples:**
 
 ```sql
--- Simple SELECT
-SELECT * FROM Users WHERE active = 1
+SELECT TOP 20 * FROM dbo.Users WHERE active = 1
 
--- Multi-line query with JOIN
-SELECT 
-    u.username,
-    u.email,
-    COUNT(o.id) as order_count
-FROM Users u
-LEFT JOIN Orders o ON u.id = o.user_id
-GROUP BY u.username, u.email
-HAVING COUNT(o.id) > 5
-
--- Create table
-CREATE TABLE Products (
-    id INT PRIMARY KEY IDENTITY(1,1),
-    name NVARCHAR(100) NOT NULL,
-    price DECIMAL(10,2),
-    created_at DATETIME DEFAULT GETDATE()
+WITH recent_orders AS (
+    SELECT TOP 50 user_id, created_at
+    FROM dbo.Orders
+    ORDER BY created_at DESC
 )
-
--- Insert data
-INSERT INTO Products (name, price)
-VALUES ('Widget', 19.99), ('Gadget', 29.99)
+SELECT user_id, COUNT(*) AS recent_order_count
+FROM recent_orders
+GROUP BY user_id
 ```
 
 ## Available Resources
@@ -222,7 +223,7 @@ The server exposes database tables as resources:
   - Shows table structure, column types, constraints
   
 - **Data Resource**: `mssql://database/schema.table/data`
-  - Shows sample data from the table (limited to 100 rows)
+  - Disabled by default and only available when `MSSQL_BLOCK_DATA_RESOURCES=false`
 
 ## Query Preprocessing
 
@@ -250,7 +251,9 @@ The server provides detailed error messages for:
 2. **Permissions**: Use database users with minimal required permissions.
 3. **Connection Encryption**: Enable `MSSQL_ENCRYPT` for production environments.
 4. **Certificate Validation**: Set `MSSQL_TRUST_SERVER_CERTIFICATE=no` for production.
-5. **Query Validation**: The server executes queries as-is. Ensure proper access controls at the database level.
+5. **Read-Only SQL User**: Use a real SQL login with read-only permissions on the allowed schemas/tables.
+6. **Query Validation**: The MCP layer only accepts a single `SELECT` or `WITH` statement, blocks dangerous tokens, rejects multi-statement batches, and limits rows/timeouts.
+7. **Metadata Exposure**: Keep `MSSQL_BLOCK_DATA_RESOURCES=true` unless sample rows are explicitly needed.
 
 ## Development
 
