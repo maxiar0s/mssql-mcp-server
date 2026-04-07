@@ -12,7 +12,7 @@ import re
 import sys
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Dict, FrozenSet, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple, cast
 
 import sqlparse
 from mcp.server import Server
@@ -164,6 +164,13 @@ def build_query_fingerprint(query: str) -> str:
     return hashlib.sha256(query.encode("utf-8", errors="ignore")).hexdigest()[:12]
 
 
+def apply_cursor_timeout(cursor, timeout: int) -> None:
+    try:
+        setattr(cursor, "timeout", timeout)
+    except Exception:
+        logger.warning("Cursor timeout attribute is not supported by this pyodbc build")
+
+
 def strip_sql_comments(query: str) -> str:
     if not query:
         return query
@@ -293,6 +300,10 @@ class DatabaseConfig:
         if trusted_connection:
             conn_parts.append("Trusted_Connection=yes")
         else:
+            if user is None or password is None:
+                raise ValueError(
+                    "MSSQL_USER and MSSQL_PASSWORD are required when not using trusted connection"
+                )
             conn_parts.extend(
                 [
                     f"UID={escape_odbc_value(user)}",
@@ -568,7 +579,7 @@ class SQLExecutor:
             conn = connect(self.connection_string)
             conn.autocommit = False
             cursor = conn.cursor()
-            cursor.timeout = self.security.query_timeout
+            apply_cursor_timeout(cursor, self.security.query_timeout)
 
             logger.info(
                 "Executing query | request_id=%s statement_type=%s length=%s",
@@ -658,7 +669,7 @@ async def list_resources() -> List[Resource]:
 
         with connect(connection_string) as conn:
             with conn.cursor() as cursor:
-                cursor.timeout = security.query_timeout
+                apply_cursor_timeout(cursor, security.query_timeout)
                 cursor.execute(
                     f"""
                     SELECT TOP {security.max_tables}
@@ -683,7 +694,9 @@ async def list_resources() -> List[Resource]:
                     full_table_name = f"{schema}.{table}"
                     resources.append(
                         Resource(
-                            uri=f"mssql://{database}/{full_table_name}/schema",
+                            uri=cast(
+                                AnyUrl, f"mssql://{database}/{full_table_name}/schema"
+                            ),
                             name=f"Schema: {full_table_name}",
                             mimeType="application/json",
                             description=f"Schema definition for table {full_table_name}",
@@ -695,7 +708,10 @@ async def list_resources() -> List[Resource]:
                     ):
                         resources.append(
                             Resource(
-                                uri=f"mssql://{database}/{full_table_name}/data",
+                                uri=cast(
+                                    AnyUrl,
+                                    f"mssql://{database}/{full_table_name}/data",
+                                ),
                                 name=f"Data: {full_table_name}",
                                 mimeType="text/plain",
                                 description=(
@@ -743,7 +759,7 @@ async def read_resource(uri: AnyUrl) -> str:
 
         with connect(connection_string) as conn:
             with conn.cursor() as cursor:
-                cursor.timeout = security.query_timeout
+                apply_cursor_timeout(cursor, security.query_timeout)
                 if resource_type == "schema":
                     return await _read_table_schema(cursor, schema, table, security)
                 return await _read_table_data(cursor, schema, table, security)
@@ -912,9 +928,12 @@ async def main():
 
         with connect(connection_string) as conn:
             with conn.cursor() as cursor:
-                cursor.timeout = security.query_timeout
+                apply_cursor_timeout(cursor, security.query_timeout)
                 cursor.execute("SELECT @@VERSION")
-                version = cursor.fetchone()[0]
+                row = cursor.fetchone()
+                if row is None:
+                    raise RuntimeError("SQL Server version query returned no rows")
+                version = row[0]
                 logger.info("Connected to SQL Server: %s", version.split("\n")[0])
     except Exception as exc:
         logger.error("Failed to connect to database: %s", exc)
