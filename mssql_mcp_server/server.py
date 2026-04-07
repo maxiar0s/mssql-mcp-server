@@ -156,6 +156,10 @@ def normalize_table_name(schema: str, table: str) -> str:
     return f"{normalize_identifier(schema)}.{normalize_identifier(table)}"
 
 
+def escape_odbc_value(value: str) -> str:
+    return "{" + value.replace("}", "}}") + "}"
+
+
 def build_query_fingerprint(query: str) -> str:
     return hashlib.sha256(query.encode("utf-8", errors="ignore")).hexdigest()[:12]
 
@@ -273,9 +277,13 @@ class DatabaseConfig:
             config["password"] = password
 
         conn_parts = [
-            f"Driver={{{driver}}}",
-            f"Server={server},{port}" if port != "1433" else f"Server={server}",
-            f"Database={database}",
+            f"Driver={escape_odbc_value(driver)}",
+            (
+                f"Server={escape_odbc_value(f'{server},{port}')}"
+                if port != "1433"
+                else f"Server={escape_odbc_value(server)}"
+            ),
+            f"Database={escape_odbc_value(database)}",
             f"TrustServerCertificate={'yes' if trust_cert else 'no'}",
             f"Encrypt={'yes' if encrypt else 'no'}",
             f"Connection Timeout={timeout}",
@@ -285,7 +293,12 @@ class DatabaseConfig:
         if trusted_connection:
             conn_parts.append("Trusted_Connection=yes")
         else:
-            conn_parts.extend([f"UID={user}", f"PWD={password}"])
+            conn_parts.extend(
+                [
+                    f"UID={escape_odbc_value(user)}",
+                    f"PWD={escape_odbc_value(password)}",
+                ]
+            )
 
         connection_string = ";".join(conn_parts) + ";"
 
